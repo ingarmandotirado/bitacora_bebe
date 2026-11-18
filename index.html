@@ -1,4 +1,4 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style><script src="config.js"></script></head><body><title>Bitácora de José Gabriel</title>
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body><title>Bitácora de José Gabriel</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="theme-color" content="#5b5fc7">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -161,6 +161,7 @@ section.view{display:flex;flex-direction:column;gap:16px}
 .prog .bar{flex:1;margin:0;height:10px}
 
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:14px 16px;border-radius:14px;font-weight:800;font-size:15.5px;background:var(--surface);border:1.5px solid var(--line);width:100%}
+a.btn{text-decoration:none;color:inherit}
 .btn.pri{background:var(--accent);color:#fff;border-color:transparent}
 .btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
 .btn.danger.arm{background:var(--bad);color:#fff}
@@ -486,10 +487,69 @@ const B = {
   async init() {
     let db = null;
     if (window.claude && typeof window.claude.use === 'function') { try { db = await window.claude.use('db'); } catch (e) { db = null; } }
+    const sheet = LS.get('bb_sheet');
     if (db) { this.db = db; this.kind = 'claude'; S.mode = 'cloud'; this.subscribe(); }
+    else if (sheet && sheet.u) { this.initSheets(sheet); }
     else if (fbConfigured()) { await this.initFirebase(); }
     else { this.initLocal(); }
     render();
+  },
+  /* ---- Google Sheets (Apps Script) ---- */
+  initSheets(cfg) {
+    this.kind = 'sheets'; this.cfg = cfg; S.mode = 'cloud'; this.ver = 0;
+    const cache = LS.get('bb_cache');
+    if (cache && cache.u === cfg.u) { S.days = cache.days || {}; S.meta = Object.assign(S.meta, cache.meta || {}); this.ver = cache.ver || 0; for (const e of events()) S.seen.add(e.id); S.loaded = true; }
+    this.outbox = LS.get('bb_outbox') || [];
+    for (const op of this.outbox) this.applyLocal(op);
+    S.rev++;
+    this.sync().then(() => { checkLocalPending(); render(); });
+    setInterval(() => { if (!document.hidden) this.sync(); }, 20000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.sync(); });
+    window.addEventListener('online', () => this.sync());
+  },
+  async call(body) {
+    const r = await fetch(this.cfg.u, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+    return r.json();
+  },
+  async sync() {
+    if (this.busy) { this.again = true; return; }
+    this.busy = true; this.again = false;
+    const ops = this.outbox.slice(0, 150);
+    try {
+      const res = await this.call(ops.length ? { op: 'push', ops, since: this.ver } : { op: 'pull', since: this.ver });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'respuesta');
+      if (ops.length) { this.outbox.splice(0, ops.length); LS.set('bb_outbox', this.outbox); }
+      this.applyPull(res); S.offline = false; S.lastSync = Date.now();
+    } catch (e) {
+      if (!S.offline && S.loaded) toast('Sin conexión con la hoja. Lo que registres se enviará al volver.', { kind: 'warn' });
+      S.offline = true;
+    }
+    this.busy = false; render(); if (F) refreshSheetIfTimer();
+    if (!S.offline && (this.again || this.outbox.length)) setTimeout(() => this.sync(), 300);
+  },
+  applyLocal(op) {
+    if (op.kind === 'ev') {
+      for (const k in S.days) { const evs = S.days[k] && S.days[k].events; if (evs && op.id in evs) delete evs[op.id]; }
+      if (op.ev) { const k = keyOf(op.ev.t); S.days[k] = S.days[k] || { date: k, events: {} }; S.days[k].events = S.days[k].events || {}; S.days[k].events[op.id] = clone(op.ev); }
+    } else if (op.kind === 'meta') S.meta[op.name] = deepMerge(clone(S.meta[op.name] || {}), op.patch || {});
+  },
+  applyPull(res) {
+    this.ver = res.ver || this.ver;
+    if (!res.same) {
+      const fresh = [], prevActive = S.meta.active || {};
+      for (const [id, json] of res.events || []) {
+        let e = null; if (json) { try { e = JSON.parse(json); } catch (x) { continue; } }
+        this.applyLocal({ kind: 'ev', id, ev: e });
+        if (e && !S.seen.has(id)) { S.seen.add(id); if (S.loaded && e.by && e.by !== S.me && Date.now() - (e.at || e.t) < 10 * MIN) fresh.push(Object.assign({ id }, e)); }
+      }
+      for (const name in res.meta || {}) S.meta[name] = res.meta[name];
+      const a = S.meta.active || {};
+      if (S.loaded) for (const k of ['breast', 'sleep', 'tummy']) if (a[k] && (!prevActive[k] || prevActive[k].t !== a[k].t) && a[k].by && a[k].by !== S.me) toast(`${a[k].by} inició: ${k === 'breast' ? '🤱 Lactancia' : k === 'sleep' ? '😴 Durmiendo' : '🐢 Tiempo de barriga'}`, { kind: 'info' });
+      for (const op of this.outbox) this.applyLocal(op); // lo que aún no llega a la hoja se conserva
+      fresh.slice(0, 3).forEach(e => toast(`${e.by} registró ${iconOf(e)} ${titleOf(e)} · ${fmtT(e.t)}`, { kind: 'info' }));
+    }
+    S.loaded = true; S.rev++;
+    LS.set('bb_cache', { u: this.cfg.u, ver: this.ver, days: S.days, meta: S.meta });
   },
   async initFirebase() {
     try {
@@ -551,6 +611,17 @@ const B = {
       if (store[id] && createBody) deepMerge(store[id], patch);
       S.rev++; this.saveLocal(); render(); return;
     }
+    if (this.kind === 'sheets') {
+      const [col, id] = path.split('/'); const ops = [];
+      if (col === 'days') for (const eid in (patch.events || {})) {
+        const e = patch.events[eid];
+        ops.push(e ? { kind: 'ev', id: eid, ev: e, fecha: keyOf(e.t), hora: fmtT(e.t), tipo: titleOf(e), det: [describe(e), e.text, e.note].filter(Boolean).join(' · '), by: e.by || '' } : { kind: 'ev', id: eid, ev: null, fecha: id });
+      } else ops.push({ kind: 'meta', name: id, patch });
+      for (const op of ops) { this.applyLocal(op); this.outbox.push(op); }
+      LS.set('bb_outbox', this.outbox); S.rev++; render();
+      clearTimeout(this.ft); this.ft = setTimeout(() => this.sync(), 250);
+      return;
+    }
     if (this.kind === 'firebase') {
       const id = path.split('/')[1];
       const body = path.startsWith('days/') ? Object.assign({ date: id }, patch) : patch;
@@ -580,7 +651,7 @@ const B = {
   patchDay(key, patch) { return this.merge('days/' + key, patch, { date: key, events: {} }); },
   patchMeta(name, patch) { return this.merge('meta/' + name, patch, {}); },
   async fetchDay(key) {
-    if (S.mode !== 'cloud' || S.days[key] || this._f && this._f[key]) return;
+    if (this.kind !== 'claude' || S.days[key] || this._f && this._f[key]) return;
     (this._f = this._f || {})[key] = true;
     try { const s = await this.db.doc('days/' + key).get(); if (s.exists) { S.days[key] = s.data(); S.rev++; render(); } } catch (e) { }
   }
@@ -607,6 +678,19 @@ function authErr(e) {
   if (/user-disabled/.test(c)) return 'Esta cuenta está desactivada.';
   return 'No se pudo entrar (' + c + ').';
 }
+function b64u(s) { return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function unb64u(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); }
+function connectFromCode(code) {
+  try { const c = JSON.parse(unb64u(code)); if (!c.u || !/^https:\/\/script\.google(usercontent)?\.com\//.test(c.u)) return false; LS.set('bb_sheet', { u: c.u, s: c.s || '' }); return true; } catch (e) { return false; }
+}
+function connectLink() { const c = LS.get('bb_sheet') || {}; return location.origin + location.pathname + '#conectar=' + b64u(JSON.stringify({ u: c.u, s: c.s })); }
+(function () { // al abrir el enlace de conexión
+  const m = (location.hash || '').match(/^#conectar=([A-Za-z0-9_\-]+)/);
+  if (!m) return;
+  const ok = connectFromCode(m[1]);
+  try { history.replaceState(null, '', location.pathname + '#inicio'); } catch (e) { location.hash = 'inicio'; }
+  if (ok) setTimeout(() => toast('Conectado a la bitácora compartida'), 600); else setTimeout(() => toast('El enlace de conexión no es válido', { kind: 'bad' }), 600);
+})();
 function checkLocalPending() {
   if (LS.get('bb_uploaded')) return; const d = LS.get('bb_data'); if (!d || !d.days) return;
   let n = 0; for (const k in d.days) { const ev = (d.days[k] || {}).events || {}; for (const id in ev) if (ev[id]) n++; }
@@ -710,7 +794,7 @@ function render() {
 function renderTop() {
   const p = S.meta.profile || {}; const name = p.name || 'José Gabriel';
   const ini = name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
-  const sync = S.mode === 'loading' ? ['', 'Conectando…'] : S.mode === 'local' ? ['local', 'Solo este dispositivo'] : S.mode === 'signin' ? ['offline', 'Sin sesión'] : S.offline ? ['offline', 'Sin conexión'] : ['cloud', 'Compartida'];
+  const sync = S.mode === 'loading' ? ['', 'Conectando…'] : S.mode === 'local' ? ['local', 'Solo este dispositivo'] : S.mode === 'signin' ? ['offline', 'Sin sesión'] : S.offline ? ['offline', 'Sin conexión' + (B.outbox && B.outbox.length ? ' · ' + B.outbox.length + ' por enviar' : '')] : ['cloud', 'Compartida'];
   $('#top').innerHTML = `<div class="baby" data-a="profile" role="button" tabindex="0" style="cursor:pointer"><div class="avatar">${esc(ini)}</div><div style="min-width:0"><h1>${esc(name)}</h1><p>${esc(ageTxt())}</p></div></div>
   <div class="topchips"><button class="pill ${sync[0]}" data-a="tab" data-v="ajustes"><span class="dot"></span>${sync[1]}</button><button class="pill" data-a="who">👤 ${esc(S.me || '¿Quién eres?')}</button></div>`;
 }
@@ -926,7 +1010,11 @@ function renderVisits() {
 }
 function renderSettings() {
   const p = S.meta.profile || {}; const supps = (S.meta.prefs && S.meta.prefs.supps) || ['Vitamina D'];
-  const modeTxt = B.kind === 'firebase' ? `<b>Sincronizada con Firebase.</b> Sesión: ${esc(S.fbUser || '')}. Lo que registren en cualquier teléfono aparece en el otro en segundos; sin conexión se guarda y se envía al volver.${S.offline ? ' Ahora mismo no hay conexión.' : ''}<div class="btns" style="margin-top:10px"><button class="btn" data-a="fb-logout">Cerrar sesión</button></div>` : S.mode === 'cloud' ? `<b>Bitácora compartida.</b> Todo lo que registran se sincroniza en vivo entre los teléfonos que abren esta página. Para que tu pareja pueda registrar, compártele la página con permiso de <b>Editor</b> (botón Compartir de Claude).${S.offline ? ' Ahora mismo no hay conexión: lo que registres se enviará al reconectar.' : ''}` : `<b>Solo en este dispositivo.</b> Los datos se guardan en este navegador. Para sincronizar entre los dos teléfonos, conecta Firebase siguiendo el README del repositorio (archivo config.js).`;
+  const sc = LS.get('bb_sheet');
+  const modeTxt = B.kind === 'sheets' ? `<b>Sincronizada con Google Sheets.</b> ${S.offline ? 'Ahora mismo sin conexión; ' + ((B.outbox || []).length) + ' cambios esperan para enviarse.' : S.lastSync ? 'Última sincronización: ' + fmtT(S.lastSync) + '.' : 'Conectando…'} Los registros de los dos teléfonos se juntan en la hoja y aparecen en el otro en unos segundos.
+    <div class="btns" style="margin-top:10px">${sc && sc.s ? `<a class="btn" href="${esc(sc.s)}" target="_blank" rel="noopener">📊 Abrir la hoja</a>` : ''}<button class="btn" data-a="sheet-copy">🔗 Copiar enlace para tu pareja</button><button class="btn danger" data-a="sheet-off">Desconectar este teléfono</button></div>`
+    : B.kind === 'firebase' ? `<b>Sincronizada con Firebase.</b> Sesión: ${esc(S.fbUser || '')}. Lo que registren en cualquier teléfono aparece en el otro en segundos; sin conexión se guarda y se envía al volver.${S.offline ? ' Ahora mismo no hay conexión.' : ''}<div class="btns" style="margin-top:10px"><button class="btn" data-a="fb-logout">Cerrar sesión</button></div>` : S.mode === 'cloud' ? `<b>Bitácora compartida.</b> Todo lo que registran se sincroniza en vivo entre los teléfonos que abren esta página. Para que tu pareja pueda registrar, compártele la página con permiso de <b>Editor</b> (botón Compartir de Claude).${S.offline ? ' Ahora mismo no hay conexión: lo que registres se enviará al reconectar.' : ''}` : `<b>Solo en este dispositivo.</b> Los datos se guardan en este navegador. Para sincronizar los dos teléfonos, abre el enlace de conexión que te dio Claude o pégalo aquí:
+    <div style="display:flex;gap:8px;margin-top:10px"><input id="sheet-link" placeholder="Enlace de conexión o dirección de Apps Script" autocapitalize="off"><button class="btn pri" style="width:auto" data-a="sheet-connect">Conectar</button></div>`;
   $('#v-ajustes').innerHTML = `
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Sincronización</h3><div class="small" style="font-weight:600">${modeTxt}</div></div>
   <div class="card"><h3 style="font-size:16px;margin-bottom:8px">¿Quién usa este teléfono?</h3><div class="chips">${['Mamá', 'Papá'].map(n => `<button class="chip ${S.me === n ? 'on' : ''}" data-a="setme" data-v="${n}">${n}</button>`).join('')}<button class="chip ${S.me && !['Mamá', 'Papá'].includes(S.me) ? 'on' : ''}" data-a="who">${S.me && !['Mamá', 'Papá'].includes(S.me) ? esc(S.me) : 'Otro cuidador…'}</button></div></div>
@@ -1304,6 +1392,9 @@ const ACT = {
   },
   'fb-logout': () => { firebase.auth().signOut().then(() => location.reload()); },
   'local-upload': async () => { const d = LS.get('bb_data'); if (!d) return; const n = await mergeDump(d); LS.set('bb_uploaded', true); S.localPending = 0; render(); toast('Subidos ' + n + ' registros'); },
+  'sheet-connect': () => { const v = ($('#sheet-link').value || '').trim(); const raw = v.match(/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_\-]+\/exec$/); if (raw) { LS.set('bb_sheet', { u: v, s: '' }); location.reload(); return; } const m = v.match(/conectar=([A-Za-z0-9_\-]+)/); if (!m || !connectFromCode(m[1])) { toast('Ese enlace no es válido. Cópialo completo.', { kind: 'bad' }); return; } location.reload(); },
+  'sheet-copy': async () => { const link = connectLink(); try { await navigator.clipboard.writeText(link); toast('Enlace copiado. Mándaselo a tu pareja por WhatsApp.'); } catch (e) { const i = document.createElement('textarea'); i.value = link; document.body.appendChild(i); i.select(); try { document.execCommand('copy'); toast('Enlace copiado'); } catch (x) { toast(link, { ms: 15000 }); } i.remove(); } },
+  'sheet-off': (v, el) => { if (!el.dataset.arm) { el.dataset.arm = '1'; el.textContent = 'Toca otra vez para desconectar'; el.classList.add('arm'); return; } ['bb_sheet', 'bb_cache', 'bb_outbox'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { } }); location.reload(); },
   'local-dismiss': () => { LS.set('bb_uploaded', true); S.localPending = 0; render(); },
   import: () => $('#importfile').click(),
 };
