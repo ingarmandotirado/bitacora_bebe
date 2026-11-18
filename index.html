@@ -535,6 +535,7 @@ const B = {
   },
   applyPull(res) {
     this.ver = res.ver || this.ver;
+    if (res.sheet && this.cfg.s !== res.sheet) { this.cfg.s = res.sheet; LS.set('bb_sheet', this.cfg); }
     if (!res.same) {
       const fresh = [], prevActive = S.meta.active || {};
       for (const [id, json] of res.events || []) {

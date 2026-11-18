@@ -1,9 +1,13 @@
 /**
  * Bitácora de José Gabriel — conexión entre la app y esta hoja de cálculo.
  * No hay que modificar nada: solo pegar, guardar e implementar como "App web".
+ * Se puede crear desde https://script.google.com/create (no hace falta abrir la hoja).
+ * Usa la hoja "Bitácora José Gabriel"; si esta cuenta no tiene acceso a ella, crea una nueva.
  * La dirección de la App web funciona como llave: compártela solo entre ustedes dos.
  */
+const SHEET_ID = '1ZSZl8hwvxUwjBrYXV6QTYho7bdtwcERholN26TeKV9Y';
 const EV = 'Eventos', DT = 'Datos';
+let BOOK_ = null;
 
 function doGet(e) { return handle_((e && e.parameter) || {}); }
 function doPost(e) {
@@ -18,7 +22,7 @@ function handle_(req) {
   lock.waitLock(25000);
   try {
     if (req.op === 'push') applyOps_(req.ops || []);
-    return out_(Object.assign({ ok: true }, pull_(Number(req.since) || 0)));
+    return out_(Object.assign({ ok: true, sheet: book_().getUrl() }, pull_(Number(req.since) || 0)));
   } catch (err) {
     return out_({ ok: false, error: String(err) });
   } finally {
@@ -27,7 +31,33 @@ function handle_(req) {
 }
 
 function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
-function sh_(name) { return SpreadsheetApp.getActive().getSheetByName(name); }
+function sh_(name) { return book_().getSheetByName(name); }
+function book_() {
+  if (BOOK_) return BOOK_;
+  const props = PropertiesService.getScriptProperties();
+  let b = null;
+  try { b = SpreadsheetApp.getActive(); } catch (e) { b = null; }
+  if (!b) { try { b = SpreadsheetApp.openById(props.getProperty('sheetId') || SHEET_ID); } catch (e) { b = null; } }
+  if (!b) { b = SpreadsheetApp.create('Bitácora José Gabriel'); props.setProperty('sheetId', b.getId()); }
+  setup_(b);
+  return (BOOK_ = b);
+}
+/** Crea las pestañas y encabezados si faltan. */
+function setup_(b) {
+  if (!b.getSheetByName(EV)) {
+    const first = b.getSheets()[0];
+    const s = first && first.getLastRow() === 0 && !b.getSheetByName(DT) ? first.setName(EV) : b.insertSheet(EV);
+    s.getRange(1, 1, 1, 9).setValues([['Fecha', 'Hora', 'Tipo', 'Detalle', 'Registró', 'ID', 'Datos (no editar)', 'Actualizado', 'Estado']]).setFontWeight('bold');
+    s.setFrozenRows(1); s.hideColumns(6, 4);
+  }
+  if (!b.getSheetByName(DT)) {
+    const s = b.insertSheet(DT);
+    s.getRange(1, 1, 1, 3).setValues([['Clave', 'Datos (no editar)', 'Actualizado']]).setFontWeight('bold');
+    s.setFrozenRows(1);
+  }
+}
+/** Opcional: ejecútala desde el editor para comprobar que todo está listo. */
+function probar() { Logger.log('Hoja lista: ' + book_().getUrl()); }
 function ver_() { return Number(PropertiesService.getScriptProperties().getProperty('ver') || 0); }
 function parse_(s) { try { return s ? JSON.parse(s) : {}; } catch (e) { return {}; } }
 function isObj_(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }

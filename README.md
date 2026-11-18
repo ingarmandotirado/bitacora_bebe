@@ -16,14 +16,15 @@ App de un solo archivo (`index.html`) para registrar la rutina y la salud del be
 
 Avisa cuando se registra lo mismo dos veces en poco tiempo (en medicinas, dentro de 4 h) y muestra alertas como fiebre en menores de 3 meses, heces pálidas o pocos pañales mojados.
 
-## Conectar la hoja de Google (una sola vez, ~3 minutos, desde la computadora)
+## Conectar la hoja de Google (una sola vez, ~5 minutos, se puede desde el teléfono)
 
-La hoja **"Bitácora José Gabriel"** ya existe en Google Drive con sus pestañas *Eventos* y *Datos*. Solo falta conectarla:
-
-1. Abre la hoja → menú **Extensiones → Apps Script**.
-2. Borra lo que aparece en el editor y pega todo el contenido de [`sheets/Codigo.gs`](sheets/Codigo.gs) (botón *Copy raw file* en GitHub). Pulsa 💾 **Guardar**.
-3. Arriba a la derecha: **Implementar → Nueva implementación**.
-4. En el engrane ⚙️ junto a *Seleccionar tipo* elige **App web**.
+1. **Copia el código:** abre https://raw.githubusercontent.com/ingarmandotirado/bitacora_bebe/main/sheets/Codigo.gs → mantén presionado el texto → **Seleccionar todo → Copiar**.
+2. **Abre Apps Script en modo escritorio** (la app de Hojas de cálculo no sirve para esto):
+   - **iPhone (Safari):** abre https://script.google.com/create → toca **"aA"** → **Solicitar sitio web de escritorio**.
+   - **Android (Chrome):** abre https://script.google.com/create → menú **⋮** → activa **Sitio de escritorio**.
+   Entra con la cuenta de Google donde está la hoja "Bitácora José Gabriel". Con otra cuenta también funciona: el código crea una hoja nueva en esa cuenta.
+3. En el editor, mantén presionado el código que aparece → **Seleccionar todo** → **Pegar**. Toca 💾 **Guardar**.
+4. **Implementar → Nueva implementación** → en el engrane ⚙️ junto a *Seleccionar tipo* elige **App web**:
    - *Ejecutar como:* **Yo**
    - *Quién tiene acceso:* **Cualquier usuario**
 5. **Implementar** → **Autorizar acceso** → elige tu cuenta.
