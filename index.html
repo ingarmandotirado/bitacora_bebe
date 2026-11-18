@@ -502,7 +502,11 @@ const B = {
     this.outbox = LS.get('bb_outbox') || [];
     for (const op of this.outbox) this.applyLocal(op);
     S.rev++;
-    this.sync().then(() => { checkLocalPending(); render(); });
+    const old = cache && cache.u && cache.u !== cfg.u ? cache : null; // se cambió de hoja: pasar lo que había
+    this.sync().then(async () => {
+      if (old) { const n = await mergeDump({ days: old.days || {}, meta: old.meta || {} }); if (n) toast('Se pasaron ' + n + ' registros a la hoja nueva'); }
+      checkLocalPending(); render();
+    });
     setInterval(() => { if (!document.hidden) this.sync(); }, 20000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.sync(); });
     window.addEventListener('online', () => this.sync());
