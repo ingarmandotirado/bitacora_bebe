@@ -1,4 +1,4 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body><title>Bitácora de José Gabriel</title>
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style><script src="config.js"></script></head><body><title>Bitácora de José Gabriel</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="theme-color" content="#5b5fc7">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -482,12 +482,33 @@ const sleepKind = t => { const h = new Date(t).getHours(); return (h >= 19 || h 
 /* ============ almacenamiento (compartido o local) ============ */
 const B = {
   db: null, queues: {}, local: null,
+  kind: 'local',
   async init() {
     let db = null;
     if (window.claude && typeof window.claude.use === 'function') { try { db = await window.claude.use('db'); } catch (e) { db = null; } }
-    if (db) { this.db = db; S.mode = 'cloud'; this.subscribe(); }
+    if (db) { this.db = db; this.kind = 'claude'; S.mode = 'cloud'; this.subscribe(); }
+    else if (fbConfigured()) { await this.initFirebase(); }
     else { this.initLocal(); }
     render();
+  },
+  async initFirebase() {
+    try {
+      if (!window.firebase) for (const m of ['app', 'auth', 'firestore']) await loadScript('https://www.gstatic.com/firebasejs/' + FB_VER + '/firebase-' + m + '-compat.js');
+      if (!(firebase.apps && firebase.apps.length)) firebase.initializeApp(window.FIREBASE_CONFIG);
+      const fs = firebase.firestore();
+      try { fs.settings({ ignoreUndefinedProperties: true, merge: true }); } catch (e) { }
+      try { await fs.enablePersistence({ synchronizeTabs: true }); } catch (e) { } // funciona sin conexión
+      this.fs = fs; this.kind = 'firebase'; S.mode = 'signin';
+      firebase.auth().onAuthStateChanged(u => {
+        S.fbUser = u ? (u.email || 'conectado') : null;
+        if (u && !this.subscribed) { this.subscribed = true; this.db = fs; S.mode = 'cloud'; this.subscribe(); checkLocalPending(); }
+        else if (!u) S.mode = 'signin';
+        render();
+      });
+    } catch (e) {
+      toast('No se pudo cargar la sincronización. Por ahora se guarda solo en este teléfono.', { kind: 'bad', ms: 7000 });
+      this.kind = 'local'; this.initLocal();
+    }
   },
   initLocal() {
     S.mode = 'local';
@@ -511,7 +532,7 @@ const B = {
       }
       S.loaded = true; S.rev++; render();
       fresh.slice(0, 3).forEach(e => toast(`${e.by} registró ${iconOf(e)} ${titleOf(e)} · ${fmtT(e.t)}`, { kind: 'info' }));
-    }, err => { S.offline = true; render(); toast('No se pudo conectar con la bitácora compartida (' + (err && err.code) + ').', { kind: 'bad' }); });
+    }, err => { S.offline = true; render(); toast(err && err.code === 'permission-denied' ? 'Tu correo no está autorizado en las reglas de Firebase. Revisa la lista de correos.' : 'No se pudo conectar con la bitácora compartida (' + (err && err.code) + ').', { kind: 'bad', ms: 8000 }); });
     this.db.collection('meta').onSnapshot(snap => {
       const prevActive = S.meta.active || {};
       for (const d of snap.docs) S.meta[d.id] = d.data() || {};
@@ -529,6 +550,12 @@ const B = {
       store[id] = deepMerge(store[id] ? clone(store[id]) : {}, createBody || patch);
       if (store[id] && createBody) deepMerge(store[id], patch);
       S.rev++; this.saveLocal(); render(); return;
+    }
+    if (this.kind === 'firebase') {
+      const id = path.split('/')[1];
+      const body = path.startsWith('days/') ? Object.assign({ date: id }, patch) : patch;
+      this.db.doc(path).set(body, { merge: true }).catch(e => toast(writeErr(e), { kind: 'bad', ms: 7000 }));
+      return; // no se espera: sin conexión Firestore lo guarda y lo envía al volver
     }
     return this.enqueue(path, async () => {
       const ref = this.db.doc(path);
@@ -560,10 +587,48 @@ const B = {
 };
 function writeErr(e) {
   const c = e && e.code;
+  if (c === 'permission-denied') return 'No se guardó: tu correo no está autorizado en las reglas de Firebase.';
+  if (c === 'resource-exhausted') return 'No se guardó: se alcanzó el límite gratuito diario de Firebase. Intenta más tarde.';
   if (c === 'invalid_argument') return 'No se guardó: tu cuenta solo puede ver esta bitácora. Pide acceso de Editor.';
   if (c === 'quota_exceeded') return 'No se guardó: la bitácora llegó a su límite de espacio. Exporta y depura datos antiguos.';
   if (c === 'revoked' || c === 'not_granted') return 'No se guardó: se perdió el acceso a la bitácora compartida.';
   return 'No se guardó por un problema de conexión. Intenta de nuevo.';
+}
+
+const FB_VER = '10.12.2';
+function fbConfigured() { const c = window.FIREBASE_CONFIG; return !!(c && c.apiKey && c.projectId && !/PEGA/i.test(c.apiKey)); }
+function loadScript(src) { return new Promise((ok, bad) => { const sc = document.createElement('script'); sc.src = src; sc.onload = ok; sc.onerror = () => bad(new Error(src)); document.head.appendChild(sc); }); }
+function authErr(e) {
+  const c = (e && e.code) || '';
+  if (/invalid-credential|wrong-password|user-not-found|invalid-login/.test(c)) return 'Correo o contraseña incorrectos.';
+  if (/invalid-email/.test(c)) return 'Ese correo no es válido.';
+  if (/too-many-requests/.test(c)) return 'Demasiados intentos. Espera unos minutos.';
+  if (/network-request-failed/.test(c)) return 'Sin conexión. Revisa tu internet.';
+  if (/user-disabled/.test(c)) return 'Esta cuenta está desactivada.';
+  return 'No se pudo entrar (' + c + ').';
+}
+function checkLocalPending() {
+  if (LS.get('bb_uploaded')) return; const d = LS.get('bb_data'); if (!d || !d.days) return;
+  let n = 0; for (const k in d.days) { const ev = (d.days[k] || {}).events || {}; for (const id in ev) if (ev[id]) n++; }
+  S.localPending = n;
+}
+async function mergeDump(j) {
+  let n = 0;
+  for (const k of Object.keys(j.days || {})) { if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue; const evs = (j.days[k] || {}).events || {}; const clean = {}; for (const id in evs) if (evs[id] && /^[A-Za-z0-9_\-]+$/.test(id)) { clean[id] = evs[id]; n++; S.seen.add(id); } if (Object.keys(clean).length) await B.patchDay(k, { events: clean }); }
+  for (const name of ['profile', 'vaccines', 'growth', 'health', 'prefs']) if (j.meta && isObj(j.meta[name]) && Object.keys(j.meta[name]).length) await B.patchMeta(name, j.meta[name]);
+  return n;
+}
+function renderLogin() {
+  ['bitacora', 'salud', 'ajustes'].forEach(n => { $('#v-' + n).hidden = true; $('#t-' + n).classList.remove('on'); }); $('#v-inicio').hidden = false;
+  if ($('#login')) return;
+  $('#v-inicio').innerHTML = `<div class="card" id="login" style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+  <h2 style="font-size:21px">Entrar a la bitácora compartida</h2>
+  <div class="small muted" style="font-weight:700">Usa el correo y la contraseña que se dieron de alta en Firebase. Solo se hace una vez en cada teléfono.</div>
+  <label class="lbl">Correo<input type="email" id="l-email" autocomplete="username" inputmode="email" autocapitalize="off"></label>
+  <label class="lbl">Contraseña<input type="password" id="l-pass" autocomplete="current-password"></label>
+  <div id="l-msg" class="small" style="font-weight:800;color:var(--bad)" aria-live="polite"></div>
+  <button class="btn pri" data-a="fb-login">Entrar</button>
+  <button class="link" data-a="fb-reset" style="align-self:center;padding:8px">Olvidé mi contraseña</button></div>`;
 }
 
 /* ============ registrar eventos ============ */
@@ -637,6 +702,7 @@ function tummyStop() { const a = activeOf('tummy'); if (!a) return; const now = 
 /* ============ render ============ */
 function render() {
   renderTop();
+  if (S.mode === 'signin') { renderLogin(); return; }
   const v = S.view;
   ['inicio', 'bitacora', 'salud', 'ajustes'].forEach(n => { $('#v-' + n).hidden = n !== v; $('#t-' + n).classList.toggle('on', n === v); });
   if (v === 'inicio') renderHome(); else if (v === 'bitacora') renderLog(); else if (v === 'salud') renderHealth(); else renderSettings();
@@ -644,7 +710,7 @@ function render() {
 function renderTop() {
   const p = S.meta.profile || {}; const name = p.name || 'José Gabriel';
   const ini = name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
-  const sync = S.mode === 'loading' ? ['', 'Conectando…'] : S.mode === 'local' ? ['local', 'Solo este dispositivo'] : S.offline ? ['offline', 'Sin conexión'] : ['cloud', 'Compartida'];
+  const sync = S.mode === 'loading' ? ['', 'Conectando…'] : S.mode === 'local' ? ['local', 'Solo este dispositivo'] : S.mode === 'signin' ? ['offline', 'Sin sesión'] : S.offline ? ['offline', 'Sin conexión'] : ['cloud', 'Compartida'];
   $('#top').innerHTML = `<div class="baby" data-a="profile" role="button" tabindex="0" style="cursor:pointer"><div class="avatar">${esc(ini)}</div><div style="min-width:0"><h1>${esc(name)}</h1><p>${esc(ageTxt())}</p></div></div>
   <div class="topchips"><button class="pill ${sync[0]}" data-a="tab" data-v="ajustes"><span class="dot"></span>${sync[1]}</button><button class="pill" data-a="who">👤 ${esc(S.me || '¿Quién eres?')}</button></div>`;
 }
@@ -713,6 +779,7 @@ function renderHome() {
   $('#v-inicio').innerHTML = `
   ${!S.me ? `<div class="alert info"><div class="ai">👋</div><div><b>¿Quién está usando este teléfono?</b><span>Así cada registro dice quién lo hizo.</span><div class="btns" style="margin-top:8px"><button class="btn" data-a="setme" data-v="Mamá">Soy Mamá</button><button class="btn" data-a="setme" data-v="Papá">Soy Papá</button></div></div></div>` : ''}
   ${!birthMs() ? `<div class="alert info"><div class="ai">🎂</div><div><b>Agrega la fecha de nacimiento</b><span>Con ella calculo vacunas, ventanas de sueño, metas de pañales y percentiles.</span><div class="btns" style="margin-top:8px"><button class="btn pri" data-a="profile">Completar perfil</button></div></div></div>` : ''}
+  ${S.mode === 'cloud' && S.localPending ? `<div class="alert info"><div class="ai">📲</div><div><b>${S.localPending === 1 ? 'Hay 1 registro guardado' : 'Hay ' + S.localPending + ' registros guardados'} solo en este teléfono</b><span>Súbelos para que tu pareja también los vea.</span><div class="btns" style="margin-top:8px"><button class="btn pri" data-a="local-upload">Subir a la bitácora compartida</button><button class="btn" data-a="local-dismiss">Ignorar</button></div></div></div>` : ''}
   ${alertsHtml()}
   ${timerCards()}
   <div class="status">
@@ -859,7 +926,7 @@ function renderVisits() {
 }
 function renderSettings() {
   const p = S.meta.profile || {}; const supps = (S.meta.prefs && S.meta.prefs.supps) || ['Vitamina D'];
-  const modeTxt = S.mode === 'cloud' ? `<b>Bitácora compartida.</b> Todo lo que registran se sincroniza en vivo entre los teléfonos que abren esta página. Para que tu pareja pueda registrar, compártele la página con permiso de <b>Editor</b> (botón Compartir de Claude).${S.offline ? ' Ahora mismo no hay conexión: lo que registres se enviará al reconectar.' : ''}` : `<b>Solo en este dispositivo.</b> Los datos se guardan en este navegador. Para compartir entre los dos teléfonos, usen la versión publicada en Claude o exporta e importa el archivo.`;
+  const modeTxt = B.kind === 'firebase' ? `<b>Sincronizada con Firebase.</b> Sesión: ${esc(S.fbUser || '')}. Lo que registren en cualquier teléfono aparece en el otro en segundos; sin conexión se guarda y se envía al volver.${S.offline ? ' Ahora mismo no hay conexión.' : ''}<div class="btns" style="margin-top:10px"><button class="btn" data-a="fb-logout">Cerrar sesión</button></div>` : S.mode === 'cloud' ? `<b>Bitácora compartida.</b> Todo lo que registran se sincroniza en vivo entre los teléfonos que abren esta página. Para que tu pareja pueda registrar, compártele la página con permiso de <b>Editor</b> (botón Compartir de Claude).${S.offline ? ' Ahora mismo no hay conexión: lo que registres se enviará al reconectar.' : ''}` : `<b>Solo en este dispositivo.</b> Los datos se guardan en este navegador. Para sincronizar entre los dos teléfonos, conecta Firebase siguiendo el README del repositorio (archivo config.js).`;
   $('#v-ajustes').innerHTML = `
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Sincronización</h3><div class="small" style="font-weight:600">${modeTxt}</div></div>
   <div class="card"><h3 style="font-size:16px;margin-bottom:8px">¿Quién usa este teléfono?</h3><div class="chips">${['Mamá', 'Papá'].map(n => `<button class="chip ${S.me === n ? 'on' : ''}" data-a="setme" data-v="${n}">${n}</button>`).join('')}<button class="chip ${S.me && !['Mamá', 'Papá'].includes(S.me) ? 'on' : ''}" data-a="who">${S.me && !['Mamá', 'Papá'].includes(S.me) ? esc(S.me) : 'Otro cuidador…'}</button></div></div>
@@ -1194,7 +1261,7 @@ const ACT = {
     const t = p('#e-t'); if (t) e.t = t; const en = p('#e-end'); if (en) e.end = Math.max(en, e.t);
     if ($('#e-L')) { e.L = Number($('#e-L').value) || 0; e.R = Number($('#e-R').value) || 0; }
     const numK = { bottle: 'ml', pump: 'ml', temp: 'c', tummy: 'min' }[e.type]; if (numK && $('#e-num')) { const nv = Number($('#e-num').value) || 0; e[numK] = numK === 'ml' && S.unit === 'oz' ? Math.round(nv * OZ) : nv; }
-    if ($('#e-text')) e.text = $('#e-text').value.trim(); if ($('#e-note')) { const n = $('#e-note').value.trim(); if (n) e.note = n; else delete e.note; }
+    if ($('#e-text')) e.text = $('#e-text').value.trim(); if ($('#e-note')) { const n = $('#e-note').value.trim(); e.note = n || null; }
     e.editedBy = S.me || ''; e.editedAt = Date.now();
     const id = e.id; delete e.id; const nk = keyOf(e.t);
     if (nk !== old) B.patchDay(old, { events: { [id]: null } }).catch(() => { });
@@ -1224,6 +1291,20 @@ const ACT = {
   'growth-save': () => { const id = F.id || rid(); const rec = { date: $('#g-date').value || todayKey(), peso: $('#g-peso').value, talla: $('#g-talla').value, pc: $('#g-pc').value, note: $('#g-note').value.trim(), by: S.me || '' }; if (!rec.peso && !rec.talla && !rec.pc) { toast('Escribe al menos una medida', { kind: 'warn' }); return; } S.meta.growth = Object.assign({}, S.meta.growth, { [id]: rec }); S.rev++; B.patchMeta('growth', { [id]: rec }).catch(() => { }); closeSheet(); render(); toast('Medición guardada'); },
   'growth-del': () => { if (!F.arm) { F.arm = true; renderSheet(); return; } const id = F.id; S.meta.growth = Object.assign({}, S.meta.growth, { [id]: null }); S.rev++; B.patchMeta('growth', { [id]: null }).catch(() => { }); closeSheet(); render(); },
   export: () => doExport(),
+  'fb-login': async () => {
+    const em = $('#l-email').value.trim(), pw = $('#l-pass').value, msg = $('#l-msg');
+    if (!em || !pw) { msg.textContent = 'Escribe tu correo y contraseña.'; return; }
+    msg.style.color = 'var(--muted)'; msg.textContent = 'Entrando…';
+    try { await firebase.auth().signInWithEmailAndPassword(em, pw); } catch (e) { msg.style.color = 'var(--bad)'; msg.textContent = authErr(e); }
+  },
+  'fb-reset': async () => {
+    const em = $('#l-email').value.trim(), msg = $('#l-msg');
+    if (!em) { msg.style.color = 'var(--bad)'; msg.textContent = 'Escribe tu correo arriba y vuelve a tocar.'; return; }
+    try { await firebase.auth().sendPasswordResetEmail(em); msg.style.color = 'var(--ok)'; msg.textContent = 'Te enviamos un correo para cambiar la contraseña.'; } catch (e) { msg.style.color = 'var(--bad)'; msg.textContent = authErr(e); }
+  },
+  'fb-logout': () => { firebase.auth().signOut().then(() => location.reload()); },
+  'local-upload': async () => { const d = LS.get('bb_data'); if (!d) return; const n = await mergeDump(d); LS.set('bb_uploaded', true); S.localPending = 0; render(); toast('Subidos ' + n + ' registros'); },
+  'local-dismiss': () => { LS.set('bb_uploaded', true); S.localPending = 0; render(); },
   import: () => $('#importfile').click(),
 };
 function syncInputs() {
@@ -1247,7 +1328,7 @@ sheetEl.addEventListener('change', e => {
     F.t = d.getTime(); F.tMode = 'custom'; sheetEl.querySelectorAll('[data-a="ago"]').forEach(x => x.classList.remove('on')); e.target.classList.add('on');
   }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && F) closeSheet(); if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[role="button"][data-a]')) { e.preventDefault(); e.target.click(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'l-pass') { ACT['fb-login'](); return; } if (e.key === 'Escape' && F) closeSheet(); if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[role="button"][data-a]')) { e.preventDefault(); e.target.click(); } });
 
 /* ============ respaldo ============ */
 async function doExport() {
@@ -1262,9 +1343,7 @@ $('#importfile').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     const j = JSON.parse(await f.text()); if (!j || !j.days || !j.meta) throw new Error('formato');
-    let n = 0;
-    for (const k of Object.keys(j.days)) { if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue; const evs = (j.days[k] || {}).events || {}; const clean = {}; for (const id in evs) if (evs[id] && /^[A-Za-z0-9_\-]+$/.test(id)) { clean[id] = evs[id]; n++; S.seen.add(id); } if (Object.keys(clean).length) await B.patchDay(k, { events: clean }).catch(() => { }); }
-    for (const name of ['profile', 'vaccines', 'growth', 'health', 'prefs']) if (isObj(j.meta[name]) && Object.keys(j.meta[name]).length) await B.patchMeta(name, j.meta[name]).catch(() => { });
+    const n = await mergeDump(j);
     toast('Importados ' + n + ' registros');
   } catch (err) { toast('Ese archivo no es un respaldo válido de la bitácora', { kind: 'bad' }); }
 });
