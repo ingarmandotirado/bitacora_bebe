@@ -20,14 +20,18 @@ function doPost(e) {
 
 function handle_(req) {
   if (req.op === 'ping') return out_({ ok: true, ver: ver_() });
-  if (req.op === 'test') { const d = send_('✅ Prueba de avisos', 'Así te llegarán los avisos de la bitácora.', 3); return out_({ ok: true, sent: d.ok, code: d.code, detail: d.detail }); }
   const props = PropertiesService.getScriptProperties();
+  if (req.op === 'test') { const d = send_('✅ Prueba de avisos', 'Así te llegarán los avisos de la bitácora.', 3); return out_({ ok: true, sent: d.ok, code: d.code, detail: d.detail, mail: !!d.mail }); }
+  if (req.op === 'config') {
+    if (typeof req.ntfyToken === 'string') { const t = req.ntfyToken.trim(); if (/^tk_[A-Za-z0-9]{10,}$/.test(t)) props.setProperty('ntfyToken', t); else if (!t) props.deleteProperty('ntfyToken'); else return out_({ ok: false, error: 'token' }); }
+    return out_({ ok: true, token: !!props.getProperty('ntfyToken') });
+  }
   if (props.getProperty('trig') !== '1') { try { ensureTrigger_(); } catch (err) { } }
   const lock = LockService.getScriptLock();
   lock.waitLock(25000);
   try {
     if (req.op === 'push') applyOps_(req.ops || []);
-    return out_(Object.assign({ ok: true, sheet: book_().getUrl(), ntfy: topic_(), avisos: props.getProperty('trig') === '1' }, pull_(Number(req.since) || 0)));
+    return out_(Object.assign({ ok: true, sheet: book_().getUrl(), ntfy: topic_(), avisos: props.getProperty('trig') === '1', token: !!props.getProperty('ntfyToken') }, pull_(Number(req.since) || 0)));
   } catch (err) {
     return out_({ ok: false, error: String(err) });
   } finally {
@@ -39,8 +43,8 @@ function handle_(req) {
 function instalar() {
   ensureTrigger_();
   book_();
-  Logger.log('Canal de ntfy: ' + topic_());
-  notify_('✅ Avisos activados', 'La bitácora ya puede mandarte avisos de tomas, extracción, sueño y alertas.', 3);
+  const d = send_('✅ Avisos activados', 'La bitácora ya puede mandarte avisos de tomas, extracción, sueño y alertas.', 3);
+  Logger.log('Canal de ntfy: ' + topic_() + ' | Respuesta de ntfy: ' + d.code + ' ' + d.detail + (d.mail ? ' | Se envió por correo como respaldo' : ''));
 }
 
 function ensureTrigger_() {
@@ -141,14 +145,37 @@ function topic_() {
 }
 function notify_(title, msg, pri) { return send_(title, msg, pri).ok; }
 function send_(title, msg, pri) {
+  let r;
   try {
-    const res = UrlFetchApp.fetch('https://ntfy.sh/', {
+    const opt = {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       payload: JSON.stringify({ topic: topic_(), title: title, message: msg, priority: pri || 3, click: APP_URL })
-    });
+    };
+    const tok = PropertiesService.getScriptProperties().getProperty('ntfyToken');
+    if (tok) opt.headers = { Authorization: 'Bearer ' + tok }; // con cuenta de ntfy el límite es por cuenta, no por servidor de Google
+    const res = UrlFetchApp.fetch('https://ntfy.sh/', opt);
     const code = res.getResponseCode();
-    return { ok: code < 300, code: code, detail: code < 300 ? '' : res.getContentText().slice(0, 200) };
-  } catch (e) { return { ok: false, code: 0, detail: String(e).slice(0, 200) }; }
+    r = { ok: code < 300, code: code, detail: code < 300 ? '' : res.getContentText().slice(0, 200) };
+  } catch (e) { r = { ok: false, code: 0, detail: String(e).slice(0, 200) }; }
+  if (!r.ok) r.mail = mail_(title, msg);
+  return r;
+}
+/** Respaldo: si ntfy falla, manda el aviso por correo a los correos de Ajustes (o al dueño de la hoja). */
+function mail_(title, msg) {
+  try {
+    const prefs = metaGet_('prefs');
+    let to = (prefs.emails || []).filter(function (x) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); });
+    if (!to.length) to = [Session.getEffectiveUser().getEmail()];
+    if (!to[0] || MailApp.getRemainingDailyQuota() < to.length) return false;
+    MailApp.sendEmail({ to: to.join(','), subject: title, name: 'Bitácora', body: msg + '\n\nAbrir la bitácora: ' + APP_URL });
+    return true;
+  } catch (e) { return false; }
+}
+function metaGet_(name) {
+  const dt = sh_(DT), dn = Math.max(0, dt.getLastRow() - 1);
+  if (!dn) return {};
+  const row = dt.getRange(2, 1, dn, 2).getValues().filter(function (r) { return String(r[0]) === name; })[0];
+  return row ? parse_(String(row[1])) : {};
 }
 /** Ejecútala desde el editor si los avisos no llegan: muestra en el registro la respuesta exacta de ntfy. */
 function diagnostico() {

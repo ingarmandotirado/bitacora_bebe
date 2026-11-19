@@ -572,7 +572,7 @@ const B = {
   /* ---- Google Sheets (Apps Script) ---- */
   initSheets(cfg) {
     this.kind = 'sheets'; this.cfg = cfg; S.mode = 'cloud'; this.ver = 0;
-    const nt = LS.get('bb_ntfy'); if (nt && nt.t) { S.ntfy = nt.t; S.avisos = !!nt.a; }
+    const nt = LS.get('bb_ntfy'); if (nt && nt.t) { S.ntfy = nt.t; S.avisos = !!nt.a; S.ntfyTok = !!nt.k; }
     const cache = LS.get('bb_cache');
     if (cache && cache.u === cfg.u) { S.days = cache.days || {}; S.meta = Object.assign(S.meta, cache.meta || {}); this.ver = cache.ver || 0; for (const e of events()) S.seen.add(e.id); S.loaded = true; }
     this.outbox = LS.get('bb_outbox') || [];
@@ -616,7 +616,7 @@ const B = {
   applyPull(res) {
     this.ver = res.ver || this.ver;
     if (res.sheet && this.cfg.s !== res.sheet) { this.cfg.s = res.sheet; LS.set('bb_sheet', this.cfg); }
-    if (res.ntfy) { S.ntfy = res.ntfy; S.avisos = !!res.avisos; LS.set('bb_ntfy', { t: S.ntfy, a: S.avisos }); }
+    if (res.ntfy) { S.ntfy = res.ntfy; S.avisos = !!res.avisos; S.ntfyTok = !!res.token; LS.set('bb_ntfy', { t: S.ntfy, a: S.avisos, k: S.ntfyTok }); }
     if (!res.same) {
       const fresh = [], prevActive = S.meta.active || {};
       for (const [id, json] of res.events || []) {
@@ -1111,7 +1111,13 @@ function settingsPlans() {
     <div class="btns" style="margin-top:10px"><button class="btn" data-a="ntfy-test">🔔 Enviar aviso de prueba</button></div>
     <div class="flabel" style="margin-top:12px">Qué avisar</div>
     <div class="chips" style="margin-top:6px">${CATS.map(([k, l]) => `<button class="chip ${on[k] ? 'on' : ''}" data-a="notif-toggle" data-v="${k}" aria-pressed="${on[k]}">${l}</button>`).join('')}</div>
-    <div class="small muted" style="font-weight:700;margin-top:8px">Los avisos pasan por el servidor público de ntfy y no incluyen el nombre del bebé. El canal es privado mientras solo ustedes lo conozcan.</div>`;
+    <div class="flabel" style="margin-top:14px">Cuenta de ntfy ${S.ntfyTok ? '<span style="color:var(--ok)">· conectada ✓</span>' : ''}</div>
+    <div class="small muted" style="font-weight:700;margin-top:4px">Sin cuenta, ntfy rechaza los avisos que salen de Google (límite diario compartido). Con una cuenta gratuita el límite es solo de ustedes: en el navegador entra a <b>ntfy.sh/signup</b>, crea usuario y contraseña; luego en <b>ntfy.sh/account</b> → <b>Tokens de acceso</b> → <b>Crear</b>, copia el token (empieza con <code>tk_</code>) y pégalo aquí. Se guarda solo en el código de la hoja, nunca en la hoja ni en GitHub.</div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="ntfy-token" type="password" autocomplete="off" autocapitalize="off" placeholder="${S.ntfyTok ? 'Token guardado · pega otro para cambiarlo' : 'tk_…'}"><button class="btn pri" style="width:auto" data-a="ntfy-token">Guardar</button></div>
+    <div class="flabel" style="margin-top:14px">Correo de respaldo</div>
+    <div class="small muted" style="font-weight:700;margin-top:4px">Si ntfy falla, el aviso llega por correo a estas direcciones (sepáralas con coma). Si lo dejas vacío, se envía al correo dueño de la hoja.</div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="ntfy-emails" type="email" multiple autocapitalize="off" value="${esc(((S.meta.prefs || {}).emails || []).join(', '))}" placeholder="mama@gmail.com, papa@gmail.com"><button class="btn" style="width:auto" data-a="ntfy-emails">Guardar</button></div>
+    <div class="small muted" style="font-weight:700;margin-top:8px">Los avisos no incluyen el nombre del bebé. El canal es privado mientras solo ustedes lo conozcan.</div>`;
   return `<div class="card"><h3 style="font-size:16px;margin-bottom:6px">Plan de tomas</h3>
     <div class="small" style="font-weight:700">Máximo entre tomas ahora: <b>${durTxt(fp.day)}</b> de día${fp.night !== fp.day ? ' · ' + (fp.night ? durTxt(fp.night) : 'libre demanda') + ' de noche' : ''}.</div>
     <div class="small muted" style="font-weight:700;margin:4px 0 10px">${esc(fp.why)}</div>
@@ -1513,8 +1519,15 @@ const ACT = {
   feedmax: v => { const n = Number(v) || 0; S.meta.prefs = Object.assign({}, S.meta.prefs, { feedMax: n }); S.rev++; B.patchMeta('prefs', { feedMax: n }).catch(() => { }); render(); toast(n ? 'Intervalo fijo: ' + durTxt(n) : 'Intervalo automático según edad y peso'); },
   pumpmode: v => { S.meta.prefs = Object.assign({}, S.meta.prefs, { pumpMode: v }); S.rev++; B.patchMeta('prefs', { pumpMode: v }).catch(() => { }); render(); toast('Plan de extracción: ' + PUMP_MODES[v][0]); },
   'notif-toggle': v => { const cur = Object.assign({ feed: true, pump: true, sleep: true, supp: true, clinical: true }, (S.meta.prefs || {}).notif || {}); const nv = !cur[v]; S.meta.prefs = deepMerge(clone(S.meta.prefs || {}), { notif: { [v]: nv } }); S.rev++; B.patchMeta('prefs', { notif: { [v]: nv } }).catch(() => { }); render(); },
+  'ntfy-token': async () => {
+    const t = ($('#ntfy-token').value || '').trim();
+    if (!/^tk_[A-Za-z0-9]{10,}$/.test(t)) { toast('El token debe empezar con tk_ y copiarse completo.', { kind: 'bad' }); return; }
+    try { const r = await B.call({ op: 'config', ntfyToken: t }); if (r && r.ok && r.token) { S.ntfyTok = true; LS.set('bb_ntfy', { t: S.ntfy, a: S.avisos, k: true }); render(); toast('Cuenta de ntfy conectada. Prueba el aviso.'); } else toast(r && r.error === 'token' ? 'Ese token no es válido.' : 'Falta actualizar el código de la hoja para guardar el token.', { kind: 'bad' }); }
+    catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); }
+  },
+  'ntfy-emails': () => { const list = ($('#ntfy-emails').value || '').split(/[,;\s]+/).map(x => x.trim()).filter(x => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)); S.meta.prefs = Object.assign({}, S.meta.prefs, { emails: list }); S.rev++; B.patchMeta('prefs', { emails: list }).catch(() => { }); render(); toast(list.length ? 'Correos de respaldo guardados' : 'Sin correos: se usará el del dueño de la hoja'); },
   'ntfy-copy': () => copyText(S.ntfy || '', 'Canal copiado. Pégalo en ntfy.'),
-  'ntfy-test': async () => { toast('Enviando aviso de prueba…'); try { const r = await B.call({ op: 'test' }); toast(r && r.sent ? 'Aviso enviado. Revisa ntfy en tu teléfono.' : r && r.code === 429 ? 'ntfy rechazó el aviso por límite de mensajes (429). Avísale a Claude.' : 'La hoja no pudo enviar el aviso' + (r && (r.code || r.detail) ? ' (' + (r.code || '') + ' ' + String(r.detail || '').slice(0, 120) + ')' : '') + '. Avísale a Claude con una captura.', { kind: r && r.sent ? '' : 'bad', ms: 12000 }); } catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); } },
+  'ntfy-test': async () => { toast('Enviando aviso de prueba…'); try { const r = await B.call({ op: 'test' }); toast(r && r.sent ? 'Aviso enviado. Revisa ntfy en tu teléfono.' : r && r.mail ? 'ntfy no aceptó el aviso' + (r.code ? ' (' + r.code + ')' : '') + ', pero se envió por correo. Conecta tu cuenta de ntfy para recibirlo en la app.' : r && r.code === 429 ? 'ntfy rechazó el aviso por límite de mensajes (429). Avísale a Claude.' : 'La hoja no pudo enviar el aviso' + (r && (r.code || r.detail) ? ' (' + (r.code || '') + ' ' + String(r.detail || '').slice(0, 120) + ')' : '') + '. Avísale a Claude con una captura.', { kind: r && r.sent ? '' : 'bad', ms: 12000 }); } catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); } },
   'local-dismiss': () => { LS.set('bb_uploaded', true); S.localPending = 0; render(); },
   import: () => $('#importfile').click(),
 };
