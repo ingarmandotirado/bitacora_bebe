@@ -155,7 +155,7 @@ function hhmm_(ms) { return Utilities.formatDate(new Date(ms), tz_(), 'HH:mm'); 
 function dayKey_(ms) { return Utilities.formatDate(new Date(ms), tz_(), 'yyyy-MM-dd'); }
 function isNight_(ms) { const h = hour_(ms); return h >= 22 || h < 6; }
 function dur_(m) { m = Math.max(0, Math.round(m)); if (m < 60) return m + ' min'; const h = Math.floor(m / 60), r = m % 60; return h + ' h' + (r ? ' ' + r + ' min' : ''); }
-function norm_(s) { return String(s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+function norm_(s) { return String(s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
 
 /** Lee lo reciente de la hoja: eventos (del más nuevo al más viejo) y datos generales. */
 function state_() {
