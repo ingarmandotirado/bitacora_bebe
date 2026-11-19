@@ -20,7 +20,7 @@ function doPost(e) {
 
 function handle_(req) {
   if (req.op === 'ping') return out_({ ok: true, ver: ver_() });
-  if (req.op === 'test') return out_({ ok: true, sent: notify_('✅ Prueba de avisos', 'Así te llegarán los avisos de la bitácora.', 3) });
+  if (req.op === 'test') { const d = send_('✅ Prueba de avisos', 'Así te llegarán los avisos de la bitácora.', 3); return out_({ ok: true, sent: d.ok, code: d.code, detail: d.detail }); }
   const props = PropertiesService.getScriptProperties();
   if (props.getProperty('trig') !== '1') { try { ensureTrigger_(); } catch (err) { } }
   const lock = LockService.getScriptLock();
@@ -139,14 +139,21 @@ function topic_() {
   if (!t) { t = 'bitacora-' + Utilities.getUuid().replace(/-/g, '').slice(0, 20); props.setProperty('ntfy', t); }
   return t;
 }
-function notify_(title, msg, pri) {
+function notify_(title, msg, pri) { return send_(title, msg, pri).ok; }
+function send_(title, msg, pri) {
   try {
     const res = UrlFetchApp.fetch('https://ntfy.sh/', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       payload: JSON.stringify({ topic: topic_(), title: title, message: msg, priority: pri || 3, click: APP_URL })
     });
-    return res.getResponseCode() < 300;
-  } catch (e) { return false; }
+    const code = res.getResponseCode();
+    return { ok: code < 300, code: code, detail: code < 300 ? '' : res.getContentText().slice(0, 200) };
+  } catch (e) { return { ok: false, code: 0, detail: String(e).slice(0, 200) }; }
+}
+/** Ejecútala desde el editor si los avisos no llegan: muestra en el registro la respuesta exacta de ntfy. */
+function diagnostico() {
+  const d = send_('🔧 Diagnóstico', 'Prueba enviada desde el editor de Apps Script.', 3);
+  Logger.log('Canal: ' + topic_() + ' | Revisión automática activa: ' + (PropertiesService.getScriptProperties().getProperty('trig') === '1') + ' | Respuesta de ntfy: ' + d.code + ' ' + d.detail);
 }
 
 function tz_() { return Session.getScriptTimeZone(); }

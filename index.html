@@ -1514,7 +1514,7 @@ const ACT = {
   pumpmode: v => { S.meta.prefs = Object.assign({}, S.meta.prefs, { pumpMode: v }); S.rev++; B.patchMeta('prefs', { pumpMode: v }).catch(() => { }); render(); toast('Plan de extracción: ' + PUMP_MODES[v][0]); },
   'notif-toggle': v => { const cur = Object.assign({ feed: true, pump: true, sleep: true, supp: true, clinical: true }, (S.meta.prefs || {}).notif || {}); const nv = !cur[v]; S.meta.prefs = deepMerge(clone(S.meta.prefs || {}), { notif: { [v]: nv } }); S.rev++; B.patchMeta('prefs', { notif: { [v]: nv } }).catch(() => { }); render(); },
   'ntfy-copy': () => copyText(S.ntfy || '', 'Canal copiado. Pégalo en ntfy.'),
-  'ntfy-test': async () => { toast('Enviando aviso de prueba…'); try { const r = await B.call({ op: 'test' }); toast(r && r.sent ? 'Aviso enviado. Revisa ntfy en tu teléfono.' : 'La hoja no pudo enviar el aviso. Revisa que hayas ejecutado «instalar».', { kind: r && r.sent ? '' : 'bad' }); } catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); } },
+  'ntfy-test': async () => { toast('Enviando aviso de prueba…'); try { const r = await B.call({ op: 'test' }); toast(r && r.sent ? 'Aviso enviado. Revisa ntfy en tu teléfono.' : r && r.code === 429 ? 'ntfy rechazó el aviso por límite de mensajes (429). Avísale a Claude.' : 'La hoja no pudo enviar el aviso' + (r && (r.code || r.detail) ? ' (' + (r.code || '') + ' ' + String(r.detail || '').slice(0, 120) + ')' : '') + '. Avísale a Claude con una captura.', { kind: r && r.sent ? '' : 'bad', ms: 12000 }); } catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); } },
   'local-dismiss': () => { LS.set('bb_uploaded', true); S.localPending = 0; render(); },
   import: () => $('#importfile').click(),
 };
