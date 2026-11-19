@@ -188,7 +188,8 @@ function feedPlan_(meta, now) {
   if (!a) return { day: 180, night: 180, wake: true };
   const bw = Number((meta.profile || {}).bw) || 0, g = meta.growth || {};
   let lastDate = '', lastW = 0;
-  Object.keys(g).forEach(function (k) { const r = g[k]; if (r && r.peso && r.date && r.date >= lastDate) { lastDate = r.date; lastW = Number(r.peso); } });
+  const born = (meta.profile || {}).birth || '';
+  Object.keys(g).forEach(function (k) { const r = g[k]; if (r && r.peso && r.date && r.date > born && r.date >= lastDate) { lastDate = r.date; lastW = Number(r.peso); } }); // solo pesos posteriores al nacimiento
   const regained = bw > 0 && lastW >= bw;
   if (a.d < 14 || a.cd < 14 || !regained) return { day: 180, night: 180, wake: true };
   if (a.cd < 61) return { day: 180, night: 240, wake: true };

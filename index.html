@@ -429,7 +429,7 @@ function feedPlan(now = Date.now()) {
   const d = ageDays(now), cd = corrDays(now);
   if (d == null) return { day: 180, night: 180, wake: true, why: 'Agrega la fecha de nacimiento para ajustarlo a su edad.' };
   const bw = Number(p.bw) || 0, g = S.meta.growth || {};
-  let lastDate = '', lastW = 0; for (const k in g) { const r = g[k]; if (r && r.peso && r.date && r.date >= lastDate) { lastDate = r.date; lastW = Number(r.peso); } }
+  let lastDate = '', lastW = 0; for (const k in g) { const r = g[k]; if (r && r.peso && r.date && r.date > (p.birth || '') && r.date >= lastDate) { lastDate = r.date; lastW = Number(r.peso); } } // solo pesos posteriores al nacimiento
   const regained = bw > 0 && lastW >= bw;
   if (d < 14 || cd < 14 || !regained) return { day: 180, night: 180, wake: true, why: (gaWeeks(p.ga) < 37 ? 'Prematuro tardío' : 'Recién nacido') + ': máximo 3 h entre el inicio de una toma y la siguiente, de día y de noche; si duerme, despertarlo. Se amplía solo cuando ' + [!regained ? 'registren un peso igual o mayor al de nacimiento' + (bw ? ' (' + bw + ' kg)' : '') : '', (d < 14 || cd < 14) ? 'cumpla 2 semanas de edad corregida' : ''].filter(Boolean).join(' y ') + '.' };
   if (cd < 61) return { day: 180, night: 240, wake: true, why: 'Ya recuperó su peso: de día cada 3 h y de noche puede estirar hasta 4 h.' };
