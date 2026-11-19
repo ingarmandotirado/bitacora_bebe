@@ -103,6 +103,14 @@ section.view{display:flex;flex-direction:column;gap:16px}
 .small4 .tile .ic{width:40px;height:40px;font-size:21px}
 .small4 .tile .lb{font-size:13px}
 
+.pcard{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;width:100%;text-align:left;padding:12px 14px;border-radius:var(--r);background:color-mix(in srgb,var(--c) 12%,var(--surface));border:2px solid color-mix(in srgb,var(--c) 40%,transparent)}
+.pcard .pi{width:42px;height:42px;border-radius:50%;background:var(--c);display:grid;place-items:center;font-size:21px}
+.pcard .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:800}
+.pcard .v{font-family:var(--f-display);font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
+.pcard .s{font-size:12.5px;color:var(--muted);font-weight:700}
+.pcard .pgo{font-weight:800;font-size:13px;padding:9px 11px;border-radius:10px;background:var(--c);color:#fff;white-space:nowrap}
+.pcard.now{border-color:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 25%,transparent)}
+.pcard.late{border-color:color-mix(in srgb,var(--warn) 75%,transparent)}
 .supps{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .supp{display:inline-flex;align-items:center;gap:6px;padding:9px 12px;border-radius:999px;border:1.5px dashed color-mix(in srgb,var(--c-med) 60%,transparent);font-weight:800;font-size:13.5px;background:var(--surface)}
 .supp.done{border-style:solid;background:color-mix(in srgb,var(--c-med) 16%,var(--surface))}
@@ -383,7 +391,7 @@ function birthMs() {
 function ageDays(at = Date.now()) { const b = birthMs(); return b == null ? null : Math.floor((at - b) / DAY); }
 function corrDays(at = Date.now()) {
   const d = ageDays(at); if (d == null) return null;
-  const ga = Number((S.meta.profile || {}).ga) || 40;
+  const ga = gaWeeks((S.meta.profile || {}).ga);
   return (ga < 37 && d < 730) ? d - Math.round((40 - ga) * 7) : d;
 }
 function ageMonths(at = Date.now()) { const d = corrDays(at); return d == null ? null : Math.max(0, d) / 30.4375; }
@@ -412,6 +420,73 @@ function wakeWindow() { // minutos [min, max]
   if (m < 10) return [150, 210]; if (m < 13) return [180, 240]; if (m < 19) return [240, 360]; return [300, 360];
 }
 function sleepRec() { const m = ageMonths(); if (m == null) return null; if (m < 4) return [14, 17]; if (m < 12) return [12, 16]; if (m < 24) return [11, 14]; return [10, 13]; }
+function gaWeeks(ga) { const n = Number(ga) || 40, w = Math.floor(n), f = Math.round((n - w) * 10); return (f >= 1 && f <= 6 && Math.abs(n - w - f / 10) < 1e-6) ? w + f / 7 : n; }
+const isNight = ms => { const h = new Date(ms).getHours(); return h >= 22 || h < 6; };
+/* Plan de tomas: se ajusta solo con la edad corregida y el peso (mismas reglas que los avisos de la hoja) */
+function feedPlan(now = Date.now()) {
+  const prefs = S.meta.prefs || {}, p = S.meta.profile || {};
+  if (Number(prefs.feedMax) > 0) return { day: +prefs.feedMax, night: +prefs.feedMax, wake: true, why: 'Intervalo fijado a mano (indicado por su pediatra).' };
+  const d = ageDays(now), cd = corrDays(now);
+  if (d == null) return { day: 180, night: 180, wake: true, why: 'Agrega la fecha de nacimiento para ajustarlo a su edad.' };
+  const bw = Number(p.bw) || 0, g = S.meta.growth || {};
+  let lastDate = '', lastW = 0; for (const k in g) { const r = g[k]; if (r && r.peso && r.date && r.date >= lastDate) { lastDate = r.date; lastW = Number(r.peso); } }
+  const regained = bw > 0 && lastW >= bw;
+  if (d < 14 || cd < 14 || !regained) return { day: 180, night: 180, wake: true, why: (gaWeeks(p.ga) < 37 ? 'Prematuro tardío' : 'Recién nacido') + ': máximo 3 h entre el inicio de una toma y la siguiente, de día y de noche; si duerme, despertarlo. Se amplía solo cuando ' + [!regained ? 'registren un peso igual o mayor al de nacimiento' + (bw ? ' (' + bw + ' kg)' : '') : '', (d < 14 || cd < 14) ? 'cumpla 2 semanas de edad corregida' : ''].filter(Boolean).join(' y ') + '.' };
+  if (cd < 61) return { day: 180, night: 240, wake: true, why: 'Ya recuperó su peso: de día cada 3 h y de noche puede estirar hasta 4 h.' };
+  if (cd < 122) return { day: 210, night: 0, wake: false, why: '2–4 meses: de día cada 3–3½ h; de noche a libre demanda, sin despertarlo.' };
+  return { day: 240, night: 0, wake: false, why: 'Más de 4 meses: de día cada 4 h; de noche a libre demanda.' };
+}
+function endOf(e) { return e.end || (e.t + (e.type === 'bottle' ? 10 : (Number(e.min) || 0)) * MIN); }
+function lastSession() {
+  const feeds = events().filter(e => e.type === 'breast' || e.type === 'bottle'); if (!feeds.length) return null;
+  let start = feeds[0].t, end = endOf(feeds[0]), id = feeds[0].id;
+  for (let i = 1; i < feeds.length; i++) { if (start - endOf(feeds[i]) < 45 * MIN) { start = feeds[i].t; id = feeds[i].id; end = Math.max(end, endOf(feeds[i])); } else break; }
+  return { start, end, id };
+}
+function nextFeed(now = Date.now()) {
+  const ses = lastSession(); if (!ses) return null; const fp = feedPlan(now);
+  const lim = isNight(ses.start + fp.day * MIN) ? fp.night : fp.day;
+  return { ses, fp, lim, due: lim ? ses.start + lim * MIN : null };
+}
+const PUMP_MODES = {
+  establecer: ['Establecer producción', 'Extraer unos 20 min después de cada toma: sacaleches doble 10–15 min o hasta sentir el seno blando (unas 8 veces al día). Aviso si pasan 3 h sin vaciar (4 h de noche). Para prematuros tardíos o mientras se complementa con biberón.'],
+  alivio: ['Solo alivio', 'Extraer solo cuando los senos estén llenos o duelan: 3–5 min o hasta sentir alivio, sin vaciar por completo, para no aumentar la producción. Aviso si pasan 4 h sin vaciar (5 h de noche).'],
+  reserva: ['Hacer reserva', 'El bebé come bien del pecho: una extracción extra 45 min después de la toma de la mañana (6:00–11:00) para guardar leche, más el aviso de 4 h sin vaciar.'],
+  off: ['Sin plan', 'No se calculan extracciones ni se mandan avisos de extracción.'],
+};
+function pumpPlan() {
+  const mode = (S.meta.prefs || {}).pumpMode || 'establecer'; if (mode === 'off') return null;
+  const E = events(), ses = lastSession();
+  const lastPump = E.find(e => e.type === 'pump'), lastBreast = E.find(e => e.type === 'breast');
+  const removal = Math.max(lastPump ? lastPump.t : 0, lastBreast ? endOf(lastBreast) : 0);
+  const pumpedAfter = ses && lastPump && lastPump.t >= ses.end - 2 * MIN;
+  const c = [];
+  if (ses && !pumpedAfter) {
+    if (mode === 'establecer') c.push({ at: ses.end + 20 * MIN, why: '20 min después de la toma de las ' + fmtT(ses.start) });
+    if (mode === 'reserva') { const h = new Date(ses.start).getHours(); if (h >= 6 && h < 11) c.push({ at: ses.end + 45 * MIN, why: 'Reserva: 45 min después de la toma de la mañana' }); }
+  }
+  if (removal) { const night = isNight(removal + 3 * 3600000), gap = mode === 'establecer' ? (night ? 240 : 180) : (night ? 300 : 240); c.push({ at: removal + gap * MIN, why: durTxt(gap) + ' desde la última vez que se vació el seno (' + fmtT(removal) + ')' }); }
+  c.sort((x, y) => x.at - y.at);
+  if (!c.length) return null;
+  const now = Date.now(), up = c.find(x => x.at + 40 * MIN > now); // la siguiente vigente; si todas pasaron, la última
+  return Object.assign({ mode }, up || c[c.length - 1]);
+}
+function pumpCard() {
+  const mode = (S.meta.prefs || {}).pumpMode || 'establecer'; if (mode === 'off') return '';
+  const head = (v, sub, cls = '') => `<button class="pcard ${cls}" style="--c:var(--c-pump)" data-a="open" data-v="pump"><div class="pi">🫙</div><div style="min-width:0"><div class="k">Próxima extracción · ${esc(PUMP_MODES[mode][0])}</div><div class="v">${v}</div><div class="s">${esc(sub)}</div></div><div class="pgo">Registrar</div></button>`;
+  if (activeOf('breast')) return head('Después de esta toma', mode === 'establecer' ? 'Unos 20 min después de terminarla' : 'Solo si sientes los senos llenos');
+  const pp = pumpPlan();
+  if (!pp) return head('Por calcular', 'Registra una toma o una extracción y aquí aparecerá la siguiente');
+  const diff = Math.round((pp.at - Date.now()) / MIN);
+  if (diff > 0) return head(`${fmtT(pp.at)} · en ${durTxt(diff)}`, pp.why);
+  if (diff > -40) return head(`Ahora (${fmtT(pp.at)})`, pp.why, 'now');
+  return head(`Pendiente desde las ${fmtT(pp.at)}`, pp.why, 'late');
+}
+function copyText(text, okMsg) {
+  const done = () => toast(okMsg);
+  try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+  function fallback() { const i = document.createElement('textarea'); i.value = text; document.body.appendChild(i); i.select(); try { document.execCommand('copy'); done(); } catch (x) { toast(text, { ms: 15000 }); } i.remove(); }
+}
 function tummyGoal() { const m = ageMonths(); if (m == null) return 30; if (m < 1) return 15; if (m < 2) return 30; if (m < 4) return 45; return 60; }
 function wetTarget() { const d = dol(); if (d == null) return 6; return d <= 5 ? Math.max(1, d) : 6; }
 function bottleRef() {
@@ -497,6 +572,7 @@ const B = {
   /* ---- Google Sheets (Apps Script) ---- */
   initSheets(cfg) {
     this.kind = 'sheets'; this.cfg = cfg; S.mode = 'cloud'; this.ver = 0;
+    const nt = LS.get('bb_ntfy'); if (nt && nt.t) { S.ntfy = nt.t; S.avisos = !!nt.a; }
     const cache = LS.get('bb_cache');
     if (cache && cache.u === cfg.u) { S.days = cache.days || {}; S.meta = Object.assign(S.meta, cache.meta || {}); this.ver = cache.ver || 0; for (const e of events()) S.seen.add(e.id); S.loaded = true; }
     this.outbox = LS.get('bb_outbox') || [];
@@ -540,6 +616,7 @@ const B = {
   applyPull(res) {
     this.ver = res.ver || this.ver;
     if (res.sheet && this.cfg.s !== res.sheet) { this.cfg.s = res.sheet; LS.set('bb_sheet', this.cfg); }
+    if (res.ntfy) { S.ntfy = res.ntfy; S.avisos = !!res.avisos; LS.set('bb_ntfy', { t: S.ntfy, a: S.avisos }); }
     if (!res.same) {
       const fresh = [], prevActive = S.meta.active || {};
       for (const [id, json] of res.events || []) {
@@ -837,12 +914,15 @@ function alertsHtml() {
   const ab = activeOf('breast'); if (ab && breastTotal(ab) > 60 * MIN) out.push(['info', '⏱️', 'La toma lleva más de 1 hora', '¿Se quedó corriendo el temporizador? Toca Terminar o edita el registro.']);
   const d = dol(); const hour = new Date().getHours();
   if (d != null && d >= 1 && hour >= 18) { const st = dayStats(todayKey()); const tg = wetTarget(); if (st.wet < Math.ceil(tg * 0.6)) out.push(['warn', '💧', 'Pocos pañales mojados hoy', `${st.wet} de ${tg}+ esperados a esta edad. Si sigue así o la orina es muy oscura, consulta al pediatra.`]); }
-  if (m != null && m < 1) { const lf = E.find(e => e.type === 'breast' || e.type === 'bottle'); if (lf && !activeOf('breast') && now - lf.t > 3.5 * 3600000) out.push(['warn', '🍼', 'Han pasado ' + durTxt((now - lf.t) / MIN) + ' sin comer', 'En las primeras semanas se recomienda que no pasen más de 3 h entre tomas (de día) hasta que recupere su peso de nacimiento.']); }
+  const nf = nextFeed(now); if (nf && nf.due && !activeOf('breast') && now > nf.due && now - nf.due < 6 * 3600000) out.push(['warn', '🍼', 'Toca comer: van ' + durTxt((now - nf.ses.start) / MIN) + ' desde la última toma', (activeOf('sleep') && nf.fp.wake ? 'Despiértalo para comer. ' : '') + 'A su edad el máximo es ' + durTxt(nf.lim) + ' entre tomas. Si ya comió, regístralo.']);
   return out.map(([k, i, t, s]) => `<div class="alert ${k}"><div class="ai">${i}</div><div><b>${esc(t)}</b><span>${esc(s)}</span></div></div>`).join('');
 }
 function renderHome() {
   const now = Date.now(); const a = S.meta.active || {};
   const lastFeed = events().find(e => e.type === 'breast' || e.type === 'bottle' || e.type === 'solid');
+  const nfx = activeOf('breast') ? null : nextFeed(now);
+  const nfTxt = nfx && nfx.due ? (now >= nfx.due ? '<b>Toca comer</b> · desde ' + fmtT(nfx.due) : 'Próxima: <b>' + fmtT(nfx.due) + '</b>') : (nfx && !nfx.lim ? 'De noche: a libre demanda' : '');
+  const nfCls = nfx && nfx.due ? (now >= nfx.due ? 'hi' : nfx.due - now < 15 * MIN ? 'mid' : 'good') : '';
   const lastDiaper = lastOf('diaper'); const lastSleep = lastOf('sleep');
   const lb = lastOf('breast');
   const next = lb ? ((lb.first || lb.side) === 'L' ? 'R' : (lb.first || lb.side) === 'R' ? 'L' : null) : null;
@@ -872,10 +952,11 @@ function renderHome() {
   ${alertsHtml()}
   ${timerCards()}
   <div class="status">
-    <button class="st" data-a="open" data-v="${lastFeed && lastFeed.type === 'bottle' ? 'bottle' : 'breast'}"><div class="k">Última toma</div><div class="v">${esc(feedV)}</div><div class="s">${feedS}</div></button>
+    <button class="st ${nfCls}" data-a="open" data-v="${lastFeed && lastFeed.type === 'bottle' ? 'bottle' : 'breast'}"><div class="k">Última toma</div><div class="v">${esc(feedV)}</div><div class="s">${feedS}</div>${nfTxt ? `<div class="s">${nfTxt}</div>` : ''}</button>
     <button class="st" data-a="open" data-v="diaper"><div class="k">Último pañal</div><div class="v">${esc(dV)}</div><div class="s">${dS}</div></button>
     <button class="st ${sCls}" data-a="open" data-v="sleep"><div class="k">Sueño</div><div class="v">${esc(sV)}</div><div class="s">${sS}</div></button>
   </div>
+  ${pumpCard()}
   <div class="big">
     ${tileHtml('breast', isBreastOn ? 'En curso · toca para ver' : next ? 'Sigue: ' + (next === 'L' ? 'izquierdo' : 'derecho') : 'Temporizador por lado', isBreastOn)}
     ${tileHtml('bottle', 'Materna o fórmula')}
@@ -965,7 +1046,7 @@ function valAt(metric, m, z) { const [L, M, Sx] = lmsAt(metric, m); return Math.
 function ncdf(z) { const t = 1 / (1 + .2316419 * Math.abs(z)); const d = .3989423 * Math.exp(-z * z / 2); const p = d * t * (.3193815 + t * (-.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return z > 0 ? 1 - p : p; }
 function pctTxt(metric, ms, x) {
   const b = birthMs(); if (b == null || !x) return '';
-  const m = Math.max(0, (ms - b) / DAY - (((Number((S.meta.profile || {}).ga) || 40) < 37) ? (40 - Number(S.meta.profile.ga)) * 7 : 0)) / 30.4375;
+  const m = Math.max(0, (ms - b) / DAY - (gaWeeks((S.meta.profile || {}).ga) < 37 ? (40 - gaWeeks(S.meta.profile.ga)) * 7 : 0)) / 30.4375;
   const z = zOf(metric, m, x); if (z == null) return '';
   const p = Math.round(ncdf(z) * 100); return 'P' + Math.max(1, Math.min(99, p));
 }
@@ -980,7 +1061,7 @@ function renderGrowth() {
   return `<button class="btn pri" data-a="growth-add">＋ Registrar peso y medidas</button>
   ${last ? `<div class="sum">${cell('peso', last)}${cell('talla', last)}${cell('pc', last)}<div class="sm"><div class="k">Última medición</div><div class="v" style="font-size:18px">${fmtD(parseKey(last.date))}</div><div class="d">${esc(last.note || '')}</div></div></div>` : ''}
   <div class="card chart"><div class="chips" style="margin-bottom:8px">${['peso', 'talla', 'pc'].map(mm => `<button class="chip ${S.chart === mm ? 'on' : ''}" style="--c:var(--c-growth)" data-a="chart" data-v="${mm}">${METRIC_N[mm]}</button>`).join('')}</div>${chartSvg(S.chart, list)}
-  <div class="small muted" style="font-weight:700">Curvas OMS para niños, 0–12 meses: percentiles 3, 15, 50, 85 y 97. ${((Number((S.meta.profile || {}).ga) || 40) < 37) ? 'Se usa edad corregida.' : ''} El percentil es aproximado; lo importante es que siga su propia curva.</div></div>
+  <div class="small muted" style="font-weight:700">Curvas OMS para niños, 0–12 meses: percentiles 3, 15, 50, 85 y 97. ${(gaWeeks((S.meta.profile || {}).ga) < 37) ? 'Se usa edad corregida.' : ''} El percentil es aproximado; lo importante es que siga su propia curva.</div></div>
   <div class="tl">${list.map(e => `<button class="row" ${e.fixed ? 'data-a="profile"' : `data-a="growth-edit" data-v="${esc(e.id)}"`}><div><div class="rt">${fmtD(parseKey(e.date))}${e.note ? ' · ' + esc(e.note) : ''}</div><div class="rd">${[e.peso ? e.peso + ' kg ' + pctTxt('peso', parseKey(e.date), Number(e.peso)) : '', e.talla ? e.talla + ' cm ' + pctTxt('talla', parseKey(e.date), Number(e.talla)) : '', e.pc ? 'PC ' + e.pc + ' cm ' + pctTxt('pc', parseKey(e.date), Number(e.pc)) : ''].filter(Boolean).join(' · ')}</div></div><span class="muted">›</span></button>`).join('') || '<div class="empty">Sin mediciones todavía. Registra el peso de cada consulta.</div>'}</div>`;
 }
 function chartSvg(metric, list) {
@@ -994,7 +1075,7 @@ function chartSvg(metric, list) {
   for (let v = yMin; v <= yMax; v += step) s += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${pl - 5}" y="${Y(v) + 3}" text-anchor="end">${v}</text>`;
   for (let m = 0; m <= 12; m += 2) s += `<text x="${X(m)}" y="${H - 8}" text-anchor="middle">${m}m</text>`;
   zs.forEach(([z, n]) => { let p = ''; for (let m = 0; m <= 12; m += .25) p += (p ? 'L' : 'M') + X(m).toFixed(1) + ' ' + Y(valAt(metric, m, z)).toFixed(1); s += `<path d="${p}" fill="none" stroke="var(--c-growth)" stroke-opacity="${z === 0 ? .9 : .35}" stroke-width="${z === 0 ? 2 : 1.2}" ${z === 0 ? '' : 'stroke-dasharray="4 3"'}/><text x="${W - pr - 2}" y="${Y(valAt(metric, 12, z)) - 3}" text-anchor="end">${n}</text>`; });
-  const b = birthMs(); const ga = Number((S.meta.profile || {}).ga) || 40; const corr = ga < 37 ? (40 - ga) * 7 : 0;
+  const b = birthMs(); const ga = gaWeeks((S.meta.profile || {}).ga); const corr = ga < 37 ? (40 - ga) * 7 : 0;
   if (b != null) {
     const pts = list.filter(e => e[metric]).map(e => [Math.max(0, ((parseKey(e.date) - b) / DAY - corr) / 30.4375), Number(e[metric])]).filter(p => p[0] <= 12).sort((a, c) => a[0] - c[0]);
     if (pts.length > 1) s += `<path d="${pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join('')}" fill="none" stroke="var(--fg)" stroke-width="2"/>`;
@@ -1013,6 +1094,34 @@ function renderVisits() {
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">🚨 Cuándo ir a urgencias o llamar al pediatra</h3><div class="small" style="font-weight:600;display:flex;flex-direction:column;gap:4px">
   <div>• Fiebre de 38 °C o más en menores de 3 meses.</div><div>• Dificultad para respirar, labios morados o pausas al respirar.</div><div>• Vómito verde, con sangre o en proyectil repetido.</div><div>• Menos de 4 pañales mojados en 24 h (después del día 5) o boca seca.</div><div>• Heces blancas, grises o color arcilla.</div><div>• Piel amarilla que se extiende al abdomen o piernas, o que aparece en las primeras 24 h.</div><div>• Muy somnoliento, difícil de despertar o llanto inconsolable que no es habitual.</div><div>• Fontanela (mollera) hundida o abombada.</div><div>• Convulsiones.</div></div></div>`;
 }
+function settingsPlans() {
+  const prefs = S.meta.prefs || {}, fp = feedPlan(), fm = Number(prefs.feedMax) || 0, mode = prefs.pumpMode || 'establecer';
+  const on = Object.assign({ feed: true, pump: true, sleep: true, supp: true, clinical: true }, prefs.notif || {});
+  const CATS = [['feed', '🍼 Tomas'], ['pump', '🫙 Extracción'], ['sleep', '😴 Ventana de sueño'], ['supp', '💊 Suplementos'], ['clinical', '🚨 Alertas de salud']];
+  let avisos;
+  if (B.kind !== 'sheets') avisos = `<div class="small muted" style="font-weight:700">Los avisos al teléfono funcionan con la sincronización de Google Sheets (versión de GitHub).</div>`;
+  else if (!S.ntfy) avisos = `<div class="small muted" style="font-weight:700">Falta actualizar el código de la hoja (Apps Script) para activar los avisos. ${S.offline ? 'Ahora mismo no hay conexión con la hoja.' : ''}</div>`;
+  else avisos = `<div class="small" style="font-weight:700;display:flex;flex-direction:column;gap:6px">
+      <div>1. Instala la app <b>ntfy</b> (App Store o Google Play).</div>
+      <div>2. En ntfy toca <b>＋</b> y suscríbete a este canal (deja el servidor como ntfy.sh):</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code class="num" style="background:var(--surface2);padding:8px 10px;border-radius:10px;font-weight:800;overflow-wrap:anywhere">${esc(S.ntfy)}</code><button class="chip" data-a="ntfy-copy">Copiar</button></div>
+      <div>3. Toca <b>Enviar aviso de prueba</b>. Tu pareja hace lo mismo en su teléfono.</div>
+      ${S.avisos ? '' : '<div style="color:var(--warn)">La revisión automática cada 5 min aún no está activa: ejecuta «instalar» en Apps Script.</div>'}
+    </div>
+    <div class="btns" style="margin-top:10px"><button class="btn" data-a="ntfy-test">🔔 Enviar aviso de prueba</button></div>
+    <div class="flabel" style="margin-top:12px">Qué avisar</div>
+    <div class="chips" style="margin-top:6px">${CATS.map(([k, l]) => `<button class="chip ${on[k] ? 'on' : ''}" data-a="notif-toggle" data-v="${k}" aria-pressed="${on[k]}">${l}</button>`).join('')}</div>
+    <div class="small muted" style="font-weight:700;margin-top:8px">Los avisos pasan por el servidor público de ntfy y no incluyen el nombre del bebé. El canal es privado mientras solo ustedes lo conozcan.</div>`;
+  return `<div class="card"><h3 style="font-size:16px;margin-bottom:6px">Plan de tomas</h3>
+    <div class="small" style="font-weight:700">Máximo entre tomas ahora: <b>${durTxt(fp.day)}</b> de día${fp.night !== fp.day ? ' · ' + (fp.night ? durTxt(fp.night) : 'libre demanda') + ' de noche' : ''}.</div>
+    <div class="small muted" style="font-weight:700;margin:4px 0 10px">${esc(fp.why)}</div>
+    <div class="chips">${[[0, 'Automático'], [150, '2 h 30'], [180, '3 h'], [210, '3 h 30'], [240, '4 h']].map(([v, l]) => `<button class="chip ${fm === v ? 'on' : ''}" data-a="feedmax" data-v="${v}">${l}</button>`).join('')}</div></div>
+  <div class="card" style="--c:var(--c-pump)"><h3 style="font-size:16px;margin-bottom:6px">Plan de extracción</h3>
+    <div class="chips">${Object.keys(PUMP_MODES).map(k => `<button class="chip ${mode === k ? 'on' : ''}" data-a="pumpmode" data-v="${k}">${PUMP_MODES[k][0]}</button>`).join('')}</div>
+    <div class="small muted" style="font-weight:700;margin-top:8px">${esc(PUMP_MODES[mode][1])}</div>
+    <div class="small muted" style="font-weight:700;margin-top:6px">Para la congestión: si el seno está duro antes de la toma, extrae 2–3 min solo para ablandar la areola; compresas frías 10–15 min después de cada toma. Fiebre de 38.3 °C o más, una zona roja y dolorosa o grietas con sangre: consulta al médico.</div></div>
+  <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Avisos al teléfono</h3>${avisos}</div>`;
+}
 function renderSettings() {
   const p = S.meta.profile || {}; const supps = (S.meta.prefs && S.meta.prefs.supps) || ['Vitamina D'];
   const sc = LS.get('bb_sheet');
@@ -1023,6 +1132,7 @@ function renderSettings() {
   $('#v-ajustes').innerHTML = `
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Sincronización</h3><div class="small" style="font-weight:600">${modeTxt}</div></div>
   <div class="card"><h3 style="font-size:16px;margin-bottom:8px">¿Quién usa este teléfono?</h3><div class="chips">${['Mamá', 'Papá'].map(n => `<button class="chip ${S.me === n ? 'on' : ''}" data-a="setme" data-v="${n}">${n}</button>`).join('')}<button class="chip ${S.me && !['Mamá', 'Papá'].includes(S.me) ? 'on' : ''}" data-a="who">${S.me && !['Mamá', 'Papá'].includes(S.me) ? esc(S.me) : 'Otro cuidador…'}</button></div></div>
+  ${settingsPlans()}
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Unidad de biberón y extracción</h3><div class="small muted" style="font-weight:700;margin-bottom:10px">Solo cambia cómo se ve en este teléfono; tu pareja puede usar la otra. 1 oz = 29.6 ml.</div>${unitToggle()}</div>
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Perfil del bebé</h3><div class="small muted" style="font-weight:700;margin-bottom:10px">${esc(p.name || 'José Gabriel')} · ${p.birth ? 'nació el ' + fmtD(birthMs()) : 'sin fecha de nacimiento'}${p.ga ? ' · ' + p.ga + ' SDG' : ''}${p.bw ? ' · ' + p.bw + ' kg al nacer' : ''}</div><button class="btn" data-a="profile">Editar perfil</button></div>
   <div class="card"><h3 style="font-size:16px;margin-bottom:6px">Suplementos diarios</h3><div class="small muted" style="font-weight:700;margin-bottom:10px">Aparecen en Inicio para marcarlos con un toque. La AAP recomienda 400 UI de vitamina D al día a bebés con leche materna; el hierro, solo si lo indica su pediatra.</div><div class="chips">${['Vitamina D', 'Hierro', 'Probiótico', 'Multivitamínico'].map(n => `<button class="chip ${supps.includes(n) ? 'on' : ''}" style="--c:var(--c-med)" data-a="supp-toggle" data-v="${n}">${n}</button>`).join('')}</div></div>
@@ -1173,7 +1283,7 @@ const SHEETS = {
   },
   pump: {
     init: () => { const l = lastOf('pump'); return { ml: (l && l.ml) || 60, side: (l && l.side) || 'B' }; },
-    render() { return head('Extracción de leche', '🫙', 'pump') + wrapC('pump', `<div class="field"><div class="flabel">Lado</div>${chips('side', [['L', 'Izquierdo'], ['R', 'Derecho'], ['B', 'Ambos']])}</div>${volumeBox(6)}${timeRow()}<div class="hint">Leche extraída: hasta 4 h a temperatura ambiente, 4 días en refrigerador y 6 meses en congelador.</div>${saveBtn('Guardar ' + vol(F.ml))}`); },
+    render() { const mode = (S.meta.prefs || {}).pumpMode || 'establecer'; return head('Extracción de leche', '🫙', 'pump') + wrapC('pump', `<div class="hint">Plan: <b>${esc(PUMP_MODES[mode][0])}</b>. ${esc(PUMP_MODES[mode][1])}</div><div class="field"><div class="flabel">Lado</div>${chips('side', [['L', 'Izquierdo'], ['R', 'Derecho'], ['B', 'Ambos']])}</div>${volumeBox(6)}${timeRow()}<div class="hint">Leche extraída: hasta 4 h a temperatura ambiente, 4 días en refrigerador y 6 meses en congelador.</div>${saveBtn('Guardar ' + vol(F.ml))}`); },
     save() { commitOrDup({ type: 'pump', t: F.t, ml: F.ml, side: F.side }); }
   },
   temp: {
@@ -1244,7 +1354,7 @@ const SHEETS = {
       return head('Perfil del bebé', '👶', 'sleep') + `
       <label class="lbl">Nombre<input id="p-name" value="${esc(p.name || 'José Gabriel')}"></label>
       <div class="grid2"><label class="lbl">Fecha de nacimiento<input type="date" id="p-birth" value="${esc(p.birth || '')}"></label><label class="lbl">Hora<input type="time" id="p-btime" value="${esc(p.birthTime || '')}"></label></div>
-      <label class="lbl">Semanas de gestación al nacer<input type="number" inputmode="numeric" id="p-ga" min="22" max="43" value="${esc(p.ga || 40)}"></label>
+      <label class="lbl">Semanas de gestación al nacer (36.4 = 36 semanas y 4 días)<input type="number" inputmode="decimal" step="0.1" id="p-ga" min="22" max="43" value="${esc(p.ga || 40)}"></label>
       <div class="grid3"><label class="lbl">Peso (kg)<input type="number" inputmode="decimal" step="0.001" id="p-bw" value="${esc(p.bw || '')}"></label><label class="lbl">Talla (cm)<input type="number" inputmode="decimal" step="0.1" id="p-bl" value="${esc(p.bl || '')}"></label><label class="lbl">PC (cm)<input type="number" inputmode="decimal" step="0.1" id="p-bh" value="${esc(p.bh || '')}"></label></div>
       <div class="grid2"><label class="lbl">Tipo de sangre<input id="p-blood" value="${esc(p.blood || '')}" placeholder="Ej. O+"></label><label class="lbl">Alergias<input id="p-allergy" value="${esc(p.allergy || '')}" placeholder="Ninguna conocida"></label></div>
       <label class="lbl">Pediatra y teléfono<input id="p-ped" value="${esc(p.ped || '')}" placeholder="Dr(a). … · 55 …"></label>
@@ -1400,6 +1510,11 @@ const ACT = {
   'sheet-connect': () => { const v = ($('#sheet-link').value || '').trim(); const raw = v.match(/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_\-]+\/exec$/); if (raw) { LS.set('bb_sheet', { u: v, s: '' }); location.reload(); return; } const m = v.match(/conectar=([A-Za-z0-9_\-]+)/); if (!m || !connectFromCode(m[1])) { toast('Ese enlace no es válido. Cópialo completo.', { kind: 'bad' }); return; } location.reload(); },
   'sheet-copy': async () => { const link = connectLink(); try { await navigator.clipboard.writeText(link); toast('Enlace copiado. Mándaselo a tu pareja por WhatsApp.'); } catch (e) { const i = document.createElement('textarea'); i.value = link; document.body.appendChild(i); i.select(); try { document.execCommand('copy'); toast('Enlace copiado'); } catch (x) { toast(link, { ms: 15000 }); } i.remove(); } },
   'sheet-off': (v, el) => { if (!el.dataset.arm) { el.dataset.arm = '1'; el.textContent = 'Toca otra vez para desconectar'; el.classList.add('arm'); return; } ['bb_sheet', 'bb_cache', 'bb_outbox'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { } }); location.reload(); },
+  feedmax: v => { const n = Number(v) || 0; S.meta.prefs = Object.assign({}, S.meta.prefs, { feedMax: n }); S.rev++; B.patchMeta('prefs', { feedMax: n }).catch(() => { }); render(); toast(n ? 'Intervalo fijo: ' + durTxt(n) : 'Intervalo automático según edad y peso'); },
+  pumpmode: v => { S.meta.prefs = Object.assign({}, S.meta.prefs, { pumpMode: v }); S.rev++; B.patchMeta('prefs', { pumpMode: v }).catch(() => { }); render(); toast('Plan de extracción: ' + PUMP_MODES[v][0]); },
+  'notif-toggle': v => { const cur = Object.assign({ feed: true, pump: true, sleep: true, supp: true, clinical: true }, (S.meta.prefs || {}).notif || {}); const nv = !cur[v]; S.meta.prefs = deepMerge(clone(S.meta.prefs || {}), { notif: { [v]: nv } }); S.rev++; B.patchMeta('prefs', { notif: { [v]: nv } }).catch(() => { }); render(); },
+  'ntfy-copy': () => copyText(S.ntfy || '', 'Canal copiado. Pégalo en ntfy.'),
+  'ntfy-test': async () => { toast('Enviando aviso de prueba…'); try { const r = await B.call({ op: 'test' }); toast(r && r.sent ? 'Aviso enviado. Revisa ntfy en tu teléfono.' : 'La hoja no pudo enviar el aviso. Revisa que hayas ejecutado «instalar».', { kind: r && r.sent ? '' : 'bad' }); } catch (e) { toast('Sin conexión con la hoja.', { kind: 'bad' }); } },
   'local-dismiss': () => { LS.set('bb_uploaded', true); S.localPending = 0; render(); },
   import: () => $('#importfile').click(),
 };
